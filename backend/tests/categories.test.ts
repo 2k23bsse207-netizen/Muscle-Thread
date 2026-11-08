@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { adminToken, catalog, prisma, request, runId, userToken } from './helpers.js'
+
+test('Categories: CRUD, admin authorization, publication status, sorting, pagination and accurate product counts', async () => {
+  await request('/admin/categories', { status: 401 })
+  await request('/admin/categories', { token: userToken, status: 403 })
+  await request('/admin/categories', { method: 'POST', token: adminToken, body: { name: 'Bad', slug: 'bad', status: 'INVALID' }, status: 400 })
+  const input = { name: `MOVE category ${runId}`, slug: `move-category-${runId}`, description: 'Training clothing', sortOrder: 2, imageUrl: 'https://example.invalid/category.jpg', seoTitle: 'Training' }
+  const { body: category } = await request('/admin/categories', { method: 'POST', token: adminToken, body: input, status: 201 })
+  assert.equal(category.productCount, 0)
+  await request('/admin/categories', { method: 'POST', token: adminToken, body: input, status: 409 })
+  const active = await prisma.product.create({ data: { name: 'Active category test', sku: `ACTIVE-${runId}`, slug: `active-${runId}`, categoryId: category.id, priceCents: 2000, status: 'ACTIVE' } })
+  await prisma.product.create({ data: { name: 'Draft category test', sku: `DRAFT-${runId}`, slug: `draft-${runId}`, categoryId: category.id, priceCents: 2000 } })
+  assert.equal((await request(`/categories/${category.slug}`)).body.productCount, 1)
+  assert.equal((await request(`/admin/categories/${category.id}`, { token: adminToken })).body.productCount, 2)
+  const list = await request(`/categories?q=MOVE%20category%20${runId}&limit=1`)
+  assert.equal(list.body.length, 1)
+  assert.equal(list.headers.get('x-total-count'), '1')
+  await request('/categories?limit=101', { status: 400 })
+  await request('/categories?status=INACTIVE', { status: 400 })
+  await request(`/admin/categories/${category.id}`, { method: 'PATCH', token: adminToken, body: {}, status: 400 })
+  await request(`/admin/categories/${category.id}`, { method: 'PATCH', token: adminToken, body: { sortOrder: -1 }, status: 400 })
+  const foreign = await catalog('category-sort')
+  await request('/admin/categories/sort', { method: 'PATCH', token: adminToken, body: { categories: [{ id: category.id, sortOrder: 10 }, { id: 'missing', sortOrder: 1 }] }, status: 404 })
+  assert.equal((await prisma.category.findUniqueOrThrow({ where: { id: category.id } })).sortOrder, 2)
+  const sorted = await request('/admin/categories/sort', { method: 'PATCH', token: adminToken, body: { categories: [{ id: category.id, sortOrder: 10 }, { id: foreign.category.id, sortOrder: 1 }] } })
+  assert.equal(sorted.body[0].id, foreign.category.id)
+  await request(`/admin/categories/${category.id}`, { method: 'DELETE', token: adminToken })
+  await request(`/categories/${category.id}`, { status: 404 })
+  await request(`/products/${active.id}`, { status: 404 })
+  assert.equal((await prisma.product.findUniqueOrThrow({ where: { id: active.id } })).status, 'ACTIVE')
+  await request(`/admin/products/${active.id}`, { method: 'PATCH', token: adminToken, body: { name: 'Keep hidden' }, status: 409 })
+  await request(`/admin/categories/${category.id}`, { method: 'PATCH', token: adminToken, body: { status: 'ACTIVE', bannerUrl: null } })
+  await request(`/products/${active.id}`)
+})

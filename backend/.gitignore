@@ -1,0 +1,83 @@
+# ==========================================
+# GYMWEAR Backend - .gitignore
+# ==========================================
+
+# Dependencies
+node_modules/
+
+# TypeScript Build Output & Caches
+dist/
+build/
+out/
+*.tsbuildinfo
+.eslintcache
+
+# Prisma Generated Client (Regenerated via `npm run db:generate`)
+src/generated/
+
+# Environment Variables & Secrets (CRITICAL)
+# Protects PostgreSQL / Neon DB credentials, JWT secrets, Cloudinary API keys
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# Temporary, Backup & Diagnostic Files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+
+# Local Diagnostic & Migration Scratch Scripts
+scripts/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Database Dumps & Local Database Files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+dump.rdb
+*.sql.gz
+*.dump
+
+# Temporary / File Upload Folders
+uploads/
+tmp/
+temp/
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+test-results/
+
+# Editor & IDE Files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Desktop.ini

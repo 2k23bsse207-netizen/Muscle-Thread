@@ -1,0 +1,97 @@
+# ==========================================
+# GYMWEAR Workspace - Root .gitignore
+# ==========================================
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Environment Variables & Secrets (CRITICAL)
+# Keep .env.example tracked, ignore all actual environment secrets
+.env
+.env.*
+.env.local
+.env.*.local
+!.env.example
+*.local
+
+# Node & Package Managers
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build Outputs & Bundler Caches
+dist/
+dist-ssr/
+build/
+out/
+.vite/
+*.tsbuildinfo
+.eslintcache
+.oxlintcache
+
+# Prisma Generated Client
+src/generated/
+generated/
+
+# Local Scratch, Diagnostic & Testing Scripts
+scripts/
+backend/scripts/
+
+# Temporary, Backup & Draft Files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+
+# Temporary & Unused Image Uploads / Drafts
+frontend/public/images/WhatsApp*
+frontend/public/images/h1.png
+frontend/public/images/hero_updated3.png
+frontend/public/images/Limitless Motion Athletic Campaign.png
+
+# Tooling, Testing & Local Automation
+.playwright-mcp/
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+*.log
+logs/
+
+# Database Dumps & Local SQLite Files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+dump.rdb
+*.sql.gz
+*.dump
+
+# Temporary & Upload Directories
+uploads/
+tmp/
+temp/
+
+# IDE & Editor Configurations
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~

@@ -1,0 +1,78 @@
+# ==========================================
+# GYMWEAR Frontend - .gitignore
+# ==========================================
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build Outputs & Caches
+dist/
+dist-ssr/
+build/
+out/
+.vite/
+*.tsbuildinfo
+.eslintcache
+.oxlintcache
+
+# Environment Variables & Secrets (CRITICAL)
+# Keep .env.example tracked, ignore all actual environment secrets
+.env
+.env.*
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.local
+!.env.example
+
+# Temporary, Backup & Draft Files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+
+# Temporary & Unused Image Uploads / Drafts
+public/images/WhatsApp*
+public/images/h1.png
+public/images/hero_updated3.png
+public/images/Limitless Motion Athletic Campaign.png
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Editor & IDE Files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Desktop.ini
