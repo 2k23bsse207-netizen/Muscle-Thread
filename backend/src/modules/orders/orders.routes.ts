@@ -5,6 +5,7 @@ import * as controller from './orders.controller.js'
 const router = Router()
 router.use(requireAuth)
 router.get('/', controller.list())
+router.post('/', controller.create)
 router.get('/:id', controller.detail())
 router.get('/:id/history', controller.history())
 export default router

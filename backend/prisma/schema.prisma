@@ -77,6 +77,11 @@ enum DiscountType {
   FIXED
 }
 
+enum PromotionType {
+  PERCENTAGE
+  FIXED
+}
+
 enum InventoryMovementType {
   ADJUSTMENT
   RECEIPT
@@ -184,8 +189,10 @@ model Product {
   features         String[]    @default([])
   careInstructions String?
 
-  // Product images
+  // Product-level images remain available as a shared migration fallback.
   images ProductImage[]
+  colors ProductColor[]
+  promotionTargets PromotionTarget[]
 
   // Retained for data preservation during the move to relational images/multiple tags.
   // New APIs use images/tags; the original values remain available for reconciliation.
@@ -213,20 +220,49 @@ model Product {
   @@index([createdAt])
 }
 
+// A colour belongs to one product; sizes and stock remain on individual variants.
+model ProductColor {
+  id        String  @id @default(cuid())
+  productId String
+  name      String
+  hex       String?
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product  Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variants ProductVariant[]
+  images   ProductImage[]
+
+  @@unique([productId, name])
+  // Composite references prevent images/variants from using another product's colour.
+  @@unique([id, productId])
+  @@index([productId, isActive, sortOrder])
+}
+
 model ProductImage {
   id        String  @id @default(cuid())
   productId String
+  // Null retains the original product-level/shared gallery during migration.
+  colorId   String?
   url       String
+  // Null for legacy/external URLs; only server uploads establish asset ownership.
+  publicId  String?
   altText   String?
   sortOrder Int     @default(0)
   isPrimary Boolean @default(false)
   isActive  Boolean @default(true)
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  color   ProductColor? @relation(fields: [colorId, productId], references: [id, productId], onDelete: Restrict)
 
   createdAt DateTime @default(now())
 
   @@index([productId, sortOrder])
+  @@index([productId, colorId, sortOrder])
+  @@index([publicId])
 }
 
 // ---------- Product Variants & Inventory ----------
@@ -234,6 +270,8 @@ model ProductImage {
 model ProductVariant {
   id        String @id @default(cuid())
   productId String
+  // Nullable for additive rollout/older writers; APIs always establish a colour.
+  colorId   String?
 
   sku String @unique
 
@@ -255,11 +293,15 @@ model ProductVariant {
   updatedAt DateTime @updatedAt
 
   product            Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  color              ProductColor?       @relation(fields: [colorId, productId], references: [id, productId], onDelete: Restrict)
   cartItems          CartItem[]
   orderItems         OrderItem[]
   inventoryMovements InventoryMovement[]
+  promotionTargets   PromotionTarget[]
 
+  // Retain legacy option uniqueness while compatibility columns are still written.
   @@unique([productId, size, colorName])
+  @@unique([colorId, size])
   @@index([productId])
 }
 
@@ -387,6 +429,12 @@ model OrderItem {
   quantity       Int
   lineTotalCents Int
 
+  // Promotion snapshot taken at checkout. unitPriceCents/lineTotalCents stay the
+  // ORIGINAL prices; promotionId is a plain string so history survives promotion edits.
+  discountCents   Int     @default(0)
+  promotionId     String?
+  promotionName   String?
+
   order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
   variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
@@ -423,4 +471,58 @@ model Discount {
   usageLimit Int?
   usedCount  Int          @default(0)
   createdAt  DateTime     @default(now())
+}
+
+// ---------- Store settings ----------
+
+// Single row (id = 1) with storefront configuration. Tax lives here so cart
+// quotes, checkout and orders all read one admin-managed rate.
+model StoreSettings {
+  id Int @id
+  // Basis points so the rate keeps exact integer math (800 = 8.00%).
+  taxRateBps Int @default(800)
+  updatedAt  DateTime @updatedAt
+}
+
+// ---------- Promotions (automatic product/variant offers) ----------
+
+// A promotion targets exactly one product OR one variant (enforced at the API
+// level; productId and variantId are mutually exclusive). Product promotions
+// apply to every variant unless a variant-scoped promotion takes priority.
+model Promotion {
+  id       String         @id @default(cuid())
+  name     String
+  marquee  String?
+  type     PromotionType
+  value    Int
+  active   Boolean        @default(true)
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  // One row per targeted product/variant; a promotion may cover many.
+  targets PromotionTarget[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active, startsAt, endsAt])
+}
+
+// A promotion applies to any number of products and variants at once. Each
+// target may override the campaign-wide discount value (NULL = inherit).
+model PromotionTarget {
+  id          String  @id @default(cuid())
+  promotionId String
+  // Exactly one of productId / variantId is set, enforced by validation.
+  productId   String?
+  variantId   String?
+  value       Int?
+
+  promotion Promotion       @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  product   Product?        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([promotionId])
+  @@index([productId])
+  @@index([variantId])
 }

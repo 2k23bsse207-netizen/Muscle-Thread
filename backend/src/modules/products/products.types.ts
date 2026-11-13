@@ -15,22 +15,41 @@ export type ProductQuery = PaginationInput & {
   inStock?: boolean
   size?: string
   colorName?: string
+  colorId?: string
   sortBy: 'createdAt' | 'updatedAt' | 'name' | 'priceCents'
   sortOrder: 'asc' | 'desc'
 }
 
-export type ImageInput = { url: string; altText?: string | null; sortOrder?: number; isPrimary?: boolean }
+export type ColorInput = { name: string; hex?: string | null; sortOrder?: number; isActive?: boolean }
+export type ColorUpdate = Partial<ColorInput> & { expectedUpdatedAt?: Date }
+export type VariantRemoval = { expectedUpdatedAt: Date }
+
+// Null means the retained product-level/shared gallery. IDs come from product
+// colour responses, never from Cloudinary or a client-generated asset handle.
+export type ImageMetadata = { colorId?: string | null; altText?: string | null; sortOrder?: number; isPrimary?: boolean }
+export type ImageInput = ImageMetadata & { url: string }
+export type ImageUpload = ImageMetadata & { buffer: Buffer }
 export type ImageUpdate = Partial<ImageInput>
+export type ImageOrder = { imageIds: string[]; colorId?: string | null }
 export type VariantInput = {
   sku: string
+  colorId?: string
   size?: string
   colorName?: string
   colorHex?: string
   priceCents?: number | null
+  // Initial stock only; metadata updates cannot carry stock.
   stock?: number
   lowStockThreshold?: number
 }
-export type VariantUpdate = Partial<Omit<VariantInput, 'stock'>> & { isActive?: boolean }
+// A changed field requires the original revision. Unchanged legacy metadata can
+// still round-trip without it, but cannot overwrite a concurrent edit.
+export type VariantUpdate = Partial<Omit<VariantInput, 'stock'>> & { isActive?: boolean; expectedUpdatedAt?: Date }
+// Nested creation creates exactly these sizes, never a Cartesian option matrix.
+export type ColorCreateInput = ColorInput & {
+  images?: ImageInput[]
+  variants?: Omit<VariantInput, 'colorId' | 'colorName' | 'colorHex'>[]
+}
 
 export type ProductInput = {
   sku: string
@@ -52,5 +71,8 @@ export type ProductInput = {
   seoDescription?: string | null
   images?: ImageInput[]
   variants?: VariantInput[]
+  colors?: ColorCreateInput[]
 }
-export type ProductUpdate = Partial<Omit<ProductInput, 'images' | 'variants'>>
+// Ordinary saves are scalar-only. Explicit child routes never infer deletion
+// from a missing array entry or route inventory through a product update.
+export type ProductUpdate = Partial<Omit<ProductInput, 'images' | 'variants' | 'colors'>>

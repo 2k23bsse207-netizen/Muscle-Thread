@@ -6,10 +6,10 @@ import { offset, page, type PaginationInput } from '../../utils/pagination.js'
 import { MAX_INT } from '../../utils/validation.js'
 import type { InventoryQuery, InventoryUpdate, StockAdjustment } from './inventory.types.js'
 
-const include = { product: { select: { id: true, name: true, slug: true, sku: true, status: true, priceCents: true, category: { select: { id: true, name: true, slug: true } } } } } satisfies Prisma.ProductVariantInclude
+const include = { color: true, product: { select: { id: true, name: true, slug: true, sku: true, status: true, priceCents: true, category: { select: { id: true, name: true, slug: true } } } } } satisfies Prisma.ProductVariantInclude
 function serialize(variant: Prisma.ProductVariantGetPayload<{ include: typeof include }>) {
   const { legacyColor: _color, ...data } = variant
-  return { ...data, isLowStock: variant.isActive && variant.stock <= variant.lowStockThreshold, effectivePriceCents: variant.priceCents ?? variant.product.priceCents }
+  return { ...data, isLowStock: variant.isActive && variant.color?.isActive !== false && variant.stock <= variant.lowStockThreshold, effectivePriceCents: variant.priceCents ?? variant.product.priceCents }
 }
 function where(query: InventoryQuery): Prisma.ProductVariantWhereInput {
   return {
@@ -19,6 +19,7 @@ function where(query: InventoryQuery): Prisma.ProductVariantWhereInput {
     ...(query.lowStock === undefined ? {} : { stock: query.lowStock ? { lte: prisma.productVariant.fields.lowStockThreshold } : { gt: prisma.productVariant.fields.lowStockThreshold } }),
     ...(query.q ? { OR: [{ sku: { contains: query.q, mode: 'insensitive' } }, { product: { name: { contains: query.q, mode: 'insensitive' } } }, { colorName: { contains: query.q, mode: 'insensitive' } }] } : {}),
     ...(query.outOfStock === undefined ? {} : { AND: [{ stock: query.outOfStock ? { equals: 0 } : { gt: 0 } }] }),
+    NOT: { color: { isActive: false } },
   }
 }
 export async function listInventory(query: InventoryQuery) {
@@ -47,21 +48,28 @@ export async function adjustStock(variantId: string, input: StockAdjustment, act
   return transaction(async tx => {
     const variant = await tx.productVariant.findUnique({ where: { id: variantId }, include })
     if (!variant) throw new AppError('Inventory variant not found', 404)
-    if (!variant.isActive || variant.product.status === 'ARCHIVED') throw new AppError('Cannot adjust inactive or archived inventory', 409)
+    if (!variant.isActive || variant.color?.isActive === false || variant.product.status === 'ARCHIVED') throw new AppError('Cannot adjust inactive or archived inventory', 409)
     if (input.expectedStock !== undefined && input.expectedStock !== variant.stock) throw new AppError('Stock changed; refresh inventory before retrying', 409)
     const next = input.stock ?? variant.stock + input.delta!
     if (!Number.isInteger(next) || next < 0 || next > MAX_INT) throw new AppError('Adjustment would produce invalid or negative stock', 409)
     const delta = next - variant.stock
     if (delta === 0) throw new AppError('Adjustment must change stock', 400)
     if (input.type === 'RECEIPT' && delta < 0) throw new AppError('A receipt must add stock', 400)
-    const updated = await tx.productVariant.updateMany({ where: { id: variantId, stock: variant.stock, isActive: true }, data: { stock: next } })
+    const updated = await tx.productVariant.updateMany({ where: { id: variantId, stock: variant.stock, isActive: true }, data: { stock: next, updatedAt: new Date(Math.max(Date.now(), variant.updatedAt.getTime() + 1)) } })
     if (updated.count !== 1) throw new AppError('Stock changed; retry the adjustment', 409)
     const movement = await tx.inventoryMovement.create({ data: { variantId, actorId, type: input.type, quantityDelta: delta, stockBefore: variant.stock, stockAfter: next, reason: input.reason } })
     return { inventory: serialize(await tx.productVariant.findUniqueOrThrow({ where: { id: variantId }, include })), movement }
   })
 }
 export async function updateInventory(variantId: string, input: InventoryUpdate) {
-  return serialize(await prisma.productVariant.update({ where: { id: variantId }, data: input, include }))
+  return transaction(async tx => {
+    const current = await tx.productVariant.findUnique({ where: { id: variantId }, include })
+    if (!current) throw new AppError('Inventory variant not found', 404)
+    if (input.lowStockThreshold === current.lowStockThreshold) return serialize(current)
+    // Threshold edits also invalidate a product drawer's original variant token,
+    // even when they follow a stock adjustment within the same millisecond.
+    return serialize(await tx.productVariant.update({ where: { id: variantId }, data: { ...input, updatedAt: new Date(Math.max(Date.now(), current.updatedAt.getTime() + 1)) }, include }))
+  })
 }
 export async function stockHistory(variantId: string, query: PaginationInput) {
   return prisma.$transaction(async tx => {

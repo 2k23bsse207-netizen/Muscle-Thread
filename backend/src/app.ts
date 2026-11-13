@@ -12,6 +12,8 @@ import discountsRoutes from './modules/discounts/discounts.routes.js'
 import ordersRoutes from './modules/orders/orders.routes.js'
 import paymentsRoutes from './modules/payments/payments.routes.js'
 import productsRoutes from './modules/products/products.routes.js'
+import promotionsRoutes from './modules/promotions/promotions.routes.js'
+import settingsRoutes from './modules/settings/settings.routes.js'
 import usersRoutes from './modules/users/users.routes.js'
 import wishlistRoutes from './modules/wishlist/wishlist.routes.js'
 
@@ -39,6 +41,8 @@ app.use('/api/v1/wishlist', wishlistRoutes)
 app.use('/api/v1/orders', ordersRoutes)
 app.use('/api/v1/payments', paymentsRoutes)
 app.use('/api/v1/discounts', discountsRoutes)
+app.use('/api/v1/promotions', promotionsRoutes)
+app.use('/api/v1/settings', settingsRoutes)
 app.use('/api/v1/admin', adminRoutes)
 
 app.use(notFound)

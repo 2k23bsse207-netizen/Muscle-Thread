@@ -30,7 +30,7 @@ before(async () => {
   ;[adminToken, userToken, otherToken] = await Promise.all([
     signAccessToken(admin.id, 'ADMIN', 300), signAccessToken(user.id, 'USER', 300), signAccessToken(other.id, 'USER', 300),
   ])
-  await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', resolve) })
+  await new Promise<void>((resolve, reject) => { server = app.listen(0, '127.0.0.1', error => error ? reject(error) : resolve()) })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Test server did not bind')
   base = `http://127.0.0.1:${address.port}/api/v1`
@@ -44,14 +44,20 @@ after(async () => {
   await prisma.$disconnect()
 })
 
-export async function request(path: string, options: { method?: string; token?: string; body?: unknown; status?: number } = {}) {
+export async function request(path: string, options: { method?: string; token?: string; body?: unknown; file?: { buffer: Uint8Array; fields?: Record<string, string> }; status?: number } = {}) {
+  let form: FormData | undefined
+  if (options.file) {
+    form = new FormData()
+    form.set('file', new Blob([new Uint8Array(options.file.buffer)], { type: 'image/png' }), 'test.png')
+    for (const [key, value] of Object.entries(options.file.fields ?? {})) form.set(key, value)
+  }
   const response = await fetch(base + path, {
     method: options.method ?? 'GET',
     headers: {
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.body !== undefined && !form ? { 'Content-Type': 'application/json' } : {}),
     },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body: form ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
   })
   const text = await response.text()
   const body = text ? JSON.parse(text) : null

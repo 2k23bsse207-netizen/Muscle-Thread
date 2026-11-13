@@ -25,6 +25,12 @@ export function parseAdjustment(input: unknown): StockAdjustment {
     reason: v.text(body.reason, 'reason', 1000),
     type: body.type === undefined ? 'ADJUSTMENT' : v.enumeration(body.type, 'type', Object.values(InventoryMovementType)),
   }
+  // Compatibility safety gate: the old drawer automatically invents this delta
+  // from a stale draft even for image-only saves. Inventory must be an explicit
+  // operation with its own count/reason, never a side effect of a product save.
+  if (result.reason === 'Stock edited from the admin product form') {
+    throw new AppError('Automatic stock changes from product saves are disabled; use an explicit inventory adjustment', 409)
+  }
   if ('expectedStock' in body) result.expectedStock = v.integer(body.expectedStock, 'expectedStock')
   if ('delta' in body) {
     result.delta = v.integer(body.delta, 'delta', -v.MAX_INT, v.MAX_INT)

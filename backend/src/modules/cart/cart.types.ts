@@ -1,2 +1,4 @@
 // Shared types for the cart module.
-export {}
+import type { QuoteInput } from '../promotions/promotions.types.js'
+
+export type { QuoteInput }

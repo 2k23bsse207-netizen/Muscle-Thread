@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { adminId, adminToken, orderFixture, otherId, otherToken, prisma, request, userId, userToken } from './helpers.js'
+import { adminId, adminToken, catalog, orderFixture, otherId, otherToken, prisma, request, userId, userToken } from './helpers.js'
 
 test('Orders: owner isolation, listing/search, immutable details and audited/payment-aware status transitions', async () => {
   await request('/orders', { status: 401 })
@@ -54,4 +54,85 @@ test('Orders: owner isolation, listing/search, immutable details and audited/pay
   const pending = await orderFixture('cancel-orders', userId)
   await request(`/admin/orders/${pending.order.id}/status`, { method: 'PATCH', token: adminToken, body: { status: 'CANCELLED' } })
   await request(`/admin/orders/${pending.order.id}/status`, { method: 'PATCH', token: adminToken, body: { status: 'PAID' }, status: 409 })
+})
+
+test('Orders: placing an order deducts exact variant stock once, audits the movement and rejects insufficient stock', async () => {
+  await request('/orders', { method: 'POST', status: 401 })
+  const shipping = { shippingName: 'Test recipient', shippingLine1: 'Test address', shippingCity: 'Test city', shippingPostal: '00000', shippingCountry: 'US' }
+  const { variant } = await catalog('checkout', { stock: 5 })
+  const ordersBefore = await prisma.order.count({ where: { userId } })
+  // Validation: empty items, duplicate variant lines, zero quantity, unknown variant.
+  await request('/orders', { method: 'POST', token: userToken, body: { items: [], ...shipping }, status: 400 })
+  await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: variant.id, quantity: 1 }, { variantId: variant.id, quantity: 1 }], ...shipping }, status: 400 })
+  await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: variant.id, quantity: 0 }], ...shipping }, status: 400 })
+  await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: 'missing-variant', quantity: 1 }], ...shipping }, status: 404 })
+  // Insufficient stock: rejected with no order, no movement, no deduction.
+  await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: variant.id, quantity: 6 }], ...shipping }, status: 409 })
+  assert.equal((await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } })).stock, 5)
+  assert.equal(await prisma.inventoryMovement.count({ where: { variantId: variant.id } }), 0)
+  assert.equal(await prisma.order.count({ where: { userId } }), ordersBefore)
+  // A later failing line rolls back earlier deductions in the same transaction.
+  const { variant: scarce } = await catalog('checkout-b', { stock: 1 })
+  await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: variant.id, quantity: 2 }, { variantId: scarce.id, quantity: 5 }], ...shipping }, status: 409 })
+  assert.equal((await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } })).stock, 5)
+  assert.equal(await prisma.inventoryMovement.count({ where: { variantId: variant.id } }), 0)
+  // Accepted order: stock deducted once from the exact variant, movement carries the order reference.
+  const created = await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: variant.id, quantity: 3 }], ...shipping }, status: 201 })
+  assert.equal(created.body.items.length, 1)
+  assert.equal(created.body.items[0].quantity, 3)
+  assert.equal(created.body.items[0].variantId, variant.id)
+  assert.equal(created.body.subtotal, 75)
+  assert.equal(created.body.status, 'PENDING')
+  assert.equal((await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } })).stock, 2)
+  const movement = await prisma.inventoryMovement.findFirstOrThrow({ where: { variantId: variant.id } })
+  assert.equal(movement.quantityDelta, -3)
+  assert.equal(movement.stockBefore, 5)
+  assert.equal(movement.stockAfter, 2)
+  assert.equal(movement.actorId, userId)
+  assert.equal(movement.reason, `Order ${created.body.orderNumber}`)
+  // Status changes never deduct or restore stock for the same order.
+  await request(`/admin/orders/${created.body.id}/status`, { method: 'PATCH', token: adminToken, body: { status: 'CANCELLED' } })
+  assert.equal((await prisma.productVariant.findUniqueOrThrow({ where: { id: variant.id } })).stock, 2)
+  assert.equal(await prisma.inventoryMovement.count({ where: { variantId: variant.id } }), 1)
+  // Concurrent orders for the last unit: exactly one is accepted, stock ends at 0.
+  const last = await catalog('checkout-c', { stock: 1 })
+  const body = { items: [{ variantId: last.variant.id, quantity: 1 }], ...shipping }
+  const outcomes = await Promise.allSettled([
+    request('/orders', { method: 'POST', token: userToken, body, status: 201 }),
+    request('/orders', { method: 'POST', token: userToken, body, status: 201 }),
+  ])
+  assert.equal(outcomes.filter(outcome => outcome.status === 'fulfilled').length, 1)
+  const failure = outcomes.find(outcome => outcome.status === 'rejected') as PromiseRejectedResult
+  assert.match(String(failure.reason), /Insufficient stock|Stock changed|Concurrent modification/)
+  assert.equal((await prisma.productVariant.findUniqueOrThrow({ where: { id: last.variant.id } })).stock, 0)
+  assert.equal(await prisma.inventoryMovement.count({ where: { variantId: last.variant.id } }), 1)
+})
+
+test('Settings: the admin tax rate drives cart quotes and order totals', async () => {
+  const shipping = { shippingName: 'Tax buyer', shippingLine1: '1 Tax Street', shippingCity: 'Taxville', shippingPostal: '00000', shippingCountry: 'US' }
+  await request('/settings')
+  await request('/admin/settings', { method: 'PATCH', token: userToken, body: { taxRatePercent: 10 }, status: 403 })
+  await request('/admin/settings', { method: 'PATCH', token: adminToken, body: { taxRatePercent: 150 }, status: 400 })
+  await request('/admin/settings', { method: 'PATCH', token: adminToken, body: { taxRatePercent: -1 }, status: 400 })
+  await request('/admin/settings', { method: 'PATCH', token: adminToken, body: { taxRatePercent: '10' }, status: 400 })
+  const { body: defaults } = await request('/settings')
+  const { body: updated } = await request('/admin/settings', { method: 'PATCH', token: adminToken, body: { taxRatePercent: 10 } })
+  const { variant } = await catalog('tax-setting', { priceCents: 2500, stock: 5 })
+  const quote = await request('/cart/quote', { method: 'POST', body: { items: [{ variantId: variant.id, quantity: 2 }] } })
+  const { body: order } = await request('/orders', { method: 'POST', token: userToken, body: { items: [{ variantId: variant.id, quantity: 1 }], ...shipping }, status: 201 })
+  // The default rate is restored before asserting, so a failed assertion below
+  // can never leave a changed tax rate for the tests that run after this file.
+  const { body: restored } = await request('/admin/settings', { method: 'PATCH', token: adminToken, body: { taxRatePercent: 8 } })
+  const after = await request('/cart/quote', { method: 'POST', body: { items: [{ variantId: variant.id, quantity: 1 }] } })
+  assert.equal(defaults.taxRatePercent, 8)
+  assert.equal(updated.taxRateBps, 1000)
+  assert.equal(updated.taxRatePercent, 10)
+  assert.equal(restored.taxRateBps, 800)
+  // Quote and order use the same rate and rounding: subtotal × rate.
+  assert.equal(quote.body.subtotalCents, 5000)
+  assert.equal(quote.body.taxCents, 500)
+  assert.equal(order.subtotal, 25)
+  assert.equal(order.tax, 2.5)
+  assert.equal(order.total, 27.5)
+  assert.equal(after.body.taxCents, 200)
 })

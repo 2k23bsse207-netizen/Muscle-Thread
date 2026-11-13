@@ -16,3 +16,6 @@ export function history(admin = false) {
 export async function updateStatus(req: Request, res: Response) {
   res.json(await service.updateOrderStatus(id(req.params.id), validation.parseStatus(req.body), req.user!.id))
 }
+export async function create(req: Request, res: Response) {
+  res.status(201).json(await service.createOrder(req.user!.id, validation.parseCreate(req.body)))
+}

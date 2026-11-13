@@ -33,8 +33,10 @@ src/generated/
 *.swp
 *.swo
 
-# Local Diagnostic & Migration Scratch Scripts
-scripts/
+# Local diagnostic scripts stay ignored; the isolated regression harness is source.
+scripts/*
+!scripts/test-backend.ts
+!scripts/test-migration.ts
 
 # Logs
 logs/

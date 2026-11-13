@@ -1,10 +1,14 @@
+import { randomBytes } from 'node:crypto'
 import { prisma } from '../../database/prisma.js'
 import { transaction } from '../../database/transaction.js'
 import { AppError } from '../../errors/app-error.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { OrderStatus } from '../../generated/prisma/enums.js'
 import { offset, page, type PaginationInput } from '../../utils/pagination.js'
-import type { OrderQuery, OrderStatusInput } from './orders.types.js'
+import { MAX_INT } from '../../utils/validation.js'
+import type { CreateOrderInput, OrderQuery, OrderStatusInput } from './orders.types.js'
+import { pickWinner, priceQuote, promotionWindowWhere, targetCandidates } from '../promotions/promotions.service.js'
+import { getTaxRateBps, taxCentsFor } from '../settings/settings.service.js'
 
 function listInclude(admin: boolean) {
   return {
@@ -20,9 +24,10 @@ function detailInclude(admin: boolean) {
     _count: { select: { items: true } },
   } satisfies Prisma.OrderInclude
 }
-function serialize<T extends { subtotalCents: number; discountCents: number; shippingCents: number; taxCents: number; totalCents: number; _count: { items: number } }>(order: T) {
+function serialize<T extends { subtotalCents: number; discountCents: number; shippingCents: number; taxCents: number; totalCents: number; _count: { items: number }; items?: { unitPriceCents: number; discountCents: number }[] }>(order: T) {
   const { _count, ...data } = order
-  return { ...data, itemCount: _count.items, subtotal: order.subtotalCents / 100, discount: order.discountCents / 100, shipping: order.shippingCents / 100, tax: order.taxCents / 100, total: order.totalCents / 100 }
+  const items = data.items?.map(item => ({ ...item, originalUnitPriceCents: item.unitPriceCents, finalUnitPriceCents: item.unitPriceCents - item.discountCents }))
+  return { ...data, ...(items ? { items } : {}), itemCount: _count.items, subtotal: order.subtotalCents / 100, discount: order.discountCents / 100, shipping: order.shippingCents / 100, tax: order.taxCents / 100, total: order.totalCents / 100 }
 }
 
 export async function listOrders(query: OrderQuery, ownerId?: string, admin = false) {
@@ -48,6 +53,77 @@ export async function getOrder(orderId: string, ownerId?: string, admin = false)
   const order = await prisma.order.findFirst({ where: { id: orderId, userId: ownerId }, include: detailInclude(admin) })
   if (!order) throw new AppError('Order not found', 404)
   return serialize(order)
+}
+
+export async function createOrder(ownerId: string, input: CreateOrderInput) {
+  // Deduction, movement and order commit or roll back together; the unique
+  // orderNumber generated here ties every movement reason to this one order.
+  const orderNumber = `GW-${Date.now().toString(36).toUpperCase()}-${randomBytes(4).toString('hex').toUpperCase()}`
+  // The admin-managed rate is read once so the stored total always matches the quote.
+  const taxRateBps = await getTaxRateBps()
+  return transaction(async tx => {
+    const running = promotionWindowWhere(new Date())
+    let subtotalCents = 0
+    let discountCents = 0
+    const items: Prisma.OrderItemUncheckedCreateWithoutOrderInput[] = []
+    for (const line of input.items) {
+      const targetScope = { where: { promotion: running }, include: { promotion: true } } as const
+      const variant = await tx.productVariant.findUnique({
+        where: { id: line.variantId },
+        include: {
+          promotionTargets: targetScope,
+          color: true,
+          product: { select: { id: true, name: true, sku: true, priceCents: true, status: true, promotionTargets: targetScope } },
+        },
+      })
+      if (!variant) throw new AppError('Order item variant not found', 404)
+      if (!variant.isActive || variant.color?.isActive === false || variant.product.status === 'ARCHIVED') throw new AppError('Cannot order inactive or archived inventory', 409)
+      const unitPriceCents = variant.priceCents ?? variant.product.priceCents
+      // Variant promotions beat product promotions; prices are quoted from the
+      // ORIGINAL unit price and only the discount is recorded, never rewritten.
+      const promotion = pickWinner([...targetCandidates(variant.promotionTargets), ...targetCandidates(variant.product.promotionTargets)])
+      const priced = priceQuote(promotion, unitPriceCents)
+      const lineTotalCents = unitPriceCents * line.quantity
+      const lineDiscountCents = priced.discountCents * line.quantity
+      if (lineTotalCents > MAX_INT) throw new AppError('Order line total exceeds the maximum', 400)
+      if (variant.stock < line.quantity) throw new AppError(`Insufficient stock for ${variant.sku}`, 409)
+      // Same optimistic guard as adjustStock: a concurrent stock change makes
+      // count 0, so stock can never go negative and no line is deducted twice.
+      const stockAfter = variant.stock - line.quantity
+      const updated = await tx.productVariant.updateMany({
+        where: { id: variant.id, stock: variant.stock, isActive: true },
+        data: { stock: stockAfter, updatedAt: new Date(Math.max(Date.now(), variant.updatedAt.getTime() + 1)) },
+      })
+      if (updated.count !== 1) throw new AppError('Stock changed while placing the order; retry', 409)
+      await tx.inventoryMovement.create({
+        data: {
+          variantId: variant.id, actorId: ownerId, type: 'ADJUSTMENT',
+          quantityDelta: -line.quantity, stockBefore: variant.stock, stockAfter,
+          reason: `Order ${orderNumber}`,
+        },
+      })
+      subtotalCents += lineTotalCents
+      discountCents += lineDiscountCents
+      items.push({
+        productId: variant.product.id, variantId: variant.id, name: variant.product.name, sku: variant.sku,
+        size: variant.size, color: variant.colorName, unitPriceCents, quantity: line.quantity, lineTotalCents,
+        discountCents: priced.discountCents, promotionId: promotion?.id ?? null, promotionName: promotion?.name ?? null,
+      })
+    }
+    const taxCents = taxCentsFor(subtotalCents, taxRateBps)
+    const order = await tx.order.create({
+      data: {
+        orderNumber, userId: ownerId, subtotalCents, discountCents, taxCents,
+        totalCents: subtotalCents - discountCents + taxCents,
+        shippingName: input.shippingName, shippingLine1: input.shippingLine1, shippingLine2: input.shippingLine2 ?? null,
+        shippingCity: input.shippingCity, shippingState: input.shippingState ?? null, shippingPostal: input.shippingPostal,
+        shippingCountry: input.shippingCountry, shippingPhone: input.shippingPhone ?? null,
+        items: { create: items },
+      },
+      include: { items: { orderBy: { id: 'asc' as const } }, _count: { select: { items: true } } },
+    })
+    return serialize(order)
+  })
 }
 
 export async function orderHistory(orderId: string, query: PaginationInput, ownerId?: string, admin = false) {
